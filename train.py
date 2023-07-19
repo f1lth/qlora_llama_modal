@@ -7,7 +7,7 @@ import transformers
 
 model_id = 'mosaicml/mpt-7b'
 
-config = transformers.AutoConfig.from_pretrained(name, trust_remote_code=True)
+config = transformers.AutoConfig.from_pretrained(model_id, trust_remote_code=True)
 config.attn_config['attn_impl'] = 'triton'
 
 model = transformers.AutoModelForCausalLM.from_pretrained(
@@ -17,25 +17,13 @@ model = transformers.AutoModelForCausalLM.from_pretrained(
   trust_remote_code=True
 )
 
-image = 
+image = (
     Image.debian_slim(python_version="3.10")
     .pip_install(
-        "accelerate",
-        "diffusers[torch]>=0.15.1",
-        "ftfy",
-        "torchvision",
-        "transformers~=4.25.1",
+        "torch",
+        "transformers",
         "triton",
-        "safetensors",
-    )
-    .pip_install(
-        "torch==2.0.1+cu117",
-        find_links="https://download.pytorch.org/whl/torch_stable.html",
-    )
-    .pip_install("xformers", pre=True)
-    .run_function(
-        download_models,
-        secrets=[Secret.from_name("huggingface-secret")],
+    
     )
 )
 stub.image = image
