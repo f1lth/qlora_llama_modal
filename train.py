@@ -1,89 +1,49 @@
-from modal import Image, Stub, gpu, method, web_endpoint
-
-stub = Stub("finetuneMyLLM")
-    #Load the model
 import torch
-import transformers
-
-model_id = 'mosaicml/mpt-7b'
-
-config = transformers.AutoConfig.from_pretrained(model_id, trust_remote_code=True)
-config.attn_config['attn_impl'] = 'triton'
-
-model = transformers.AutoModelForCausalLM.from_pretrained(
-  model_id,
-  config=config,
-  torch_dtype=torch.bfloat16, # Load model weights in bfloat16
-  trust_remote_code=True
-)
-
-image = (
-    Image.debian_slim(python_version="3.10")
-    .pip_install(
-        "torch",
-        "transformers",
-        "triton",
-    
-    )
-)
-stub.image = image
-
-
-
-
-
-
-
-
 from datasets import load_dataset
+from peft import LoraConfig, get_peft_model, prepare_model_for_int8_training
+from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments
+from trl import SFTTrainer
 
-dataset_artificial = load_dataset("pubmed_qa", "pqa_artificial")
+def train():
+    train_dataset = load_dataset("pubmed_qa", 'pqa_labeled', split="train")
 
-dataset_labeled = load_dataset("pubmed_qa", "pqa_labeled")
+    tokenizer = AutoTokenizer.from_pretrained("meta-llama/Llama-2-13b-hf")
+    tokenizer.pad_token = tokenizer.eos_token
+    model = AutoModelForCausalLM.from_pretrained(
+        "meta-llama/Llama-2-13b-hf", 
+        load_in_4bit=True, torch_dtype=torch.float16, device_map="auto"
+    )
 
-#format the data
-import json
+    model.resize_token_embeddings(len(tokenizer))
+    model = prepare_model_for_int8_training(model)
+    peft_config = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, bias='none', task_type='CAUSAL_LM')
+    model = get_peft_model(model, peft_config)
 
-def format_dataset_forqlora(dataset):
-    qlora_dataset = {
-        'data': []
-    }
+    training_args = TrainingArguments(
+        output_dir="./results",
+        per_device_train_batch_size=4, 
+        optimizer='adamw_torch',
+        logging_steps=100,
+        learning_rate = 2e-4,
+        fp16=True,
+        warmup_ratio=0.1,
+        lr_scheudler_type='linear',
+        num_train_epochs=1,
+        save_strategy='epoch',
+        push_to_hub=True
+    )
+    trainer = SFTTrainer(
+        model=model,
+        train_dataset=train_dataset,
+        dataset_text_field='question',
+        max_seq_length=1024,
+        tokenizer=tokenizer,
+        args=training_args,
+        packing=True,
+        peft_config=peft_config,
+    )
 
-    for example in dataset['train']:
-        paragraphs = []
-        context = example['context']['contexts'][0]
-        paragraph = {
-            'context': context,
-            'qas': []
-        }
-        paragraphs.append(paragraph)
+    trainer.train()
+    trainer.push_to_hub()
 
-        question = example['question']
-        answer = example['long_answer']
-        qas = {
-            'question': question,
-            'id': str(example['pubid']),
-            'answers': [
-                {
-                    'text': answer,
-                    'answer_start': context.find(answer)
-                }
-            ]
-        }
-        paragraphs[0]['qas'].append(qas)
-
-        data = {
-            'title': f"Document {example['pubid']}",
-            'paragraphs': paragraphs
-        }
-        qlora_dataset['data'].append(data)
-
-    return qlora_dataset
-
-# Example usage
-qlora_formatted_dataset = format_dataset_forqlora(dataset_labeled)
-
-# Save the formatted dataset to a file
-with open('qlora_dataset.json', 'w') as f:
-    json.dump(qlora_formatted_dataset, f)
-
+train()
