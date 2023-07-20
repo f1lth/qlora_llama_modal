@@ -1,0 +1,62 @@
+import torch
+from datasets import load_dataset
+from peft import LoraConfig, get_peft_model, prepare_model_for_int8_training
+from transformers import AutoTokenizer, AutoModelForCausalLM, TrainingArguments
+from trl import SFTTrainer
+
+'''
+# fine-tune the meta model on a dataset: pubmed_qa 
+# via lora training on a gpu 
+'''
+def train():
+    # SET CURRENT DATASET HERE
+    train_dataset = load_dataset("pubmed_qa", 'pqa_labeled', split="train")
+
+    # SET MODEL NAME HERE
+    model_name = "meta-llama/Llama-2-13b-hf"
+
+    # SET TOKENIZER:
+    # Note: May need to change per model
+    tokenizer = AutoTokenizer.from_pretrained(model_name)
+    tokenizer.pad_token = tokenizer.eos_token
+
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        load_in_4bit=True, 
+        torch_dtype=torch.float16, 
+        device_map="auto"
+    )
+
+    model.resize_token_embeddings(len(tokenizer))
+    model = prepare_model_for_int8_training(model)
+    peft_config = LoraConfig(r=16, lora_alpha=32, lora_dropout=0.05, bias='none', task_type='CAUSAL_LM')
+    model = get_peft_model(model, peft_config)
+
+    training_args = TrainingArguments(
+        output_dir="./results",
+        per_device_train_batch_size=4, 
+        optimizer='adamw_torch',
+        logging_steps=100,
+        learning_rate = 2e-4,
+        fp16=True,
+        warmup_ratio=0.1,
+        lr_scheudler_type='linear',
+        num_train_epochs=1,
+        save_strategy='epoch',
+        push_to_hub=True
+    )
+    trainer = SFTTrainer(
+        model=model,
+        train_dataset=train_dataset,
+        dataset_text_field='question',
+        max_seq_length=1024,
+        tokenizer=tokenizer,
+        args=training_args,
+        packing=True,
+        peft_config=peft_config,
+    )
+
+    trainer.train()       # call the trianing method
+    trainer.push_to_hub() # push to your huggingfcae account
+
+train()
